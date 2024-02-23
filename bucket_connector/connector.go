@@ -8,26 +8,13 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
-    "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/aws"
     "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 var logger *zap.Logger
-
-const (
-	DefaultAccessKey = "xxx"
-	DefaultSecretKey = "yyy"
-	DefaultBucket = "aws-s3-test-buckey"
-	DefaultRegion = "us-west-1"
-)
-
-type UploaderReq struct {
-    FileName 	string `json:"fileName"`
-    BucketName 	string `json:"bucketName"`
-    RawData  	string `json:"rawData"`
-}
 
 type BucketConnector struct {
 	params Params
@@ -53,7 +40,6 @@ func Module(scope string) fx.Option {
 
 			logger = p.Logger.Named(scope)
 
-			// Load the Shared AWS Configuration (~/.aws/config)
 			cfg, err := config.LoadDefaultConfig(context.TODO())
 			if err != nil {
 				log.Fatal(err)
@@ -118,47 +104,6 @@ func (c *BucketConnector) UploadFile(filename string, bucketName string, data *o
     })
 
 	return err
-}
-
-func (c *BucketConnector) SaveFile(req *UploaderReq) (string, error) {
-	return "", nil
-	// new a bucket client
-	// ctx := context.Background()
-
-	// decode, err := base64.StdEncoding.DecodeString(req.Data)
-	// reader := base64.NewDecoder(base64.StdEncoding, strings.NewReader(req.RawData))
-
-	// // init uploder
-	// fileName := uuid.New().String()
-	// if req.FileName != "" {
-	// 	fileName = req.FileName;
-	// }
-
-	// filePath := fmt.Sprintf("%s/%s", req.Category, fileName)
-
-	// bucket := c.client.Bucket(viper.GetString(c.getConfigPath("bucket_name")))
-	// w := bucket.Object(filePath).NewWriter(ctx)
-	// w.ACL = []storage.ACLRule{{Entity: storage.AllUsers, Role: storage.RoleReader}}
-
-	// // upload to bucket
-	// if _, err := io.Copy(w, reader); err != nil {
-	// 	c.logger.Error("io.Copy Error")
-	// 	return "", err
-	// }
-	// if err := w.Close(); err != nil {
-	// 	c.logger.Error("io.Close Error")
-	// 	return "", err
-	// }
-
-	// u, err := url.Parse(fmt.Sprintf("%v/%v", w.Attrs().Bucket, w.Attrs().Name))
-	// if err != nil {
-	// 	c.logger.Error("url.Parse Error")
-	// 	return "", err
-	// }
-
-	// url := fmt.Sprintf("https://%s", u.EscapedPath())
-
-	// return url, nil
 }
 
 func (c *BucketConnector) GetClient() *s3.Client {
