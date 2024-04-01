@@ -5,8 +5,8 @@ import (
 	"log"
 	"fmt"
 	"encoding/base64"
-	"strings"
 	"net/url"
+	"bytes"
 
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -112,7 +112,7 @@ func (c *BucketConnector) onStart(ctx context.Context) error {
 		zap.String("bucket_region", viper.GetString(c.getConfigPath("bucket_region"))),
 	)
 
-	cfg, err := config.LoadDefaultConfig(ctx,
+	cfg, err := config.LoadDefaultConfig(context.TODO(),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
 			viper.GetString(c.getConfigPath("bucket_key")),
 			viper.GetString(c.getConfigPath("bucket_secret")),
@@ -147,11 +147,14 @@ func (c *BucketConnector) ListBuckets() ([]types.Bucket, error) {
 	return result.Buckets, nil
 }
 
-func (c *BucketConnector) SaveFile(req *UploaderReq) (string, error) {
-	ctx := context.Background()
+func (c *BucketConnector) SaveFile(req *UploaderReq, contentType string) (string, error) {
+	decodedData, err := base64.StdEncoding.DecodeString(req.RawData)
+	if err != nil {
+		c.logger.Error("Upload to S3 error", zap.Error(err))
+		return "", err
+    }
 
-	encodedData := req.RawData
-	reader := base64.NewDecoder(base64.StdEncoding, strings.NewReader(encodedData))
+	reader := bytes.NewReader(decodedData)
 
 	fileName := uuid.New().String()
 	if req.FileName != "" {
@@ -160,25 +163,15 @@ func (c *BucketConnector) SaveFile(req *UploaderReq) (string, error) {
 
 	filePath := fmt.Sprintf("%s/%s", req.Category, fileName)
 
-	contentType := "image/jpeg"
-
-	// Calculate the approximate content length from the base64 encoded data
-	// Every 4 base64 characters represent 3 bytes of data
-	rawLength := int64(len(encodedData))
-	contentLength := (rawLength / 4) * 3
-	if rawLength%4 != 0 { // Handle any padding
-		contentLength += rawLength%4 - 1
-	}
-
 	c.logger.Info("Uploading file to S3", zap.String("file_path", filePath))
 
 	bucketName := viper.GetString(c.getConfigPath("bucket_name"))
-	_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:        &bucketName,
+	_, err = c.client.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket:        aws.String(bucketName),
 		Key:           aws.String(filePath),
 		Body:          reader,
-		ContentType:   &contentType,
-		ContentLength: &contentLength,
+		ContentType:   aws.String(contentType),
+		ContentLength: aws.Int64(int64(len(decodedData))),
 	})
 	if err != nil {
 		c.logger.Error("Upload to S3 error", zap.Error(err))
