@@ -3,18 +3,38 @@ package bucket_connector
 import (
 	"context"
 	"log"
-	"os"
-	
+	"fmt"
+	"encoding/base64"
+	"strings"
+	"net/url"
+
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
+	"github.com/spf13/viper"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/aws"
-    "github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/google/uuid"
 )
 
 var logger *zap.Logger
+
+const (
+	DefaultBucketName   = "example.com"
+	DefaultBucketKey    = "ABCDE"
+	DefaultBucketSecret = "example_secret"
+	DefaultBucketToken  = ""
+	DefaultBucketRegion = "us-west-1"
+)
+
+type UploaderReq struct {
+    FileName string `json:"file_name"`
+    Category string `json:"category"`
+    RawData  string `json:"rowData"`
+}
 
 type BucketConnector struct {
 	params Params
@@ -71,9 +91,41 @@ func Module(scope string) fx.Option {
 	)
 }
 
+func (c *BucketConnector) getConfigPath(key string) string {
+	return fmt.Sprintf("%s.%s", c.scope, key)
+}
+
+func (c *BucketConnector) initDefaultConfigs() {
+	viper.SetDefault(c.getConfigPath("bucket_name"), DefaultBucketName)
+	viper.SetDefault(c.getConfigPath("bucket_key"), DefaultBucketKey)
+	viper.SetDefault(c.getConfigPath("bucket_secret"), DefaultBucketSecret)
+	viper.SetDefault(c.getConfigPath("bucket_token"), DefaultBucketToken)
+	viper.SetDefault(c.getConfigPath("bucket_region"), DefaultBucketRegion)
+}
+
 func (c *BucketConnector) onStart(ctx context.Context) error {
-	
-	c.logger.Info("BucketConnector onStart")
+	logger.Info("Starting BucketConnector",
+		zap.String("bucket_name", viper.GetString(c.getConfigPath("bucket_name"))),
+		zap.String("bucket_key", viper.GetString(c.getConfigPath("bucket_key"))),
+		zap.String("bucket_secret", viper.GetString(c.getConfigPath("bucket_secret"))),
+		zap.String("bucket_token", viper.GetString(c.getConfigPath("bucket_token"))),
+		zap.String("bucket_region", viper.GetString(c.getConfigPath("bucket_region"))),
+	)
+
+	cfg, err := config.LoadDefaultConfig(ctx,
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			viper.GetString(c.getConfigPath("bucket_key")),
+			viper.GetString(c.getConfigPath("bucket_secret")),
+			viper.GetString(c.getConfigPath("bucket_token")),
+		)),
+		config.WithRegion(viper.GetString(c.getConfigPath("bucket_region"))),
+	)
+	if err != nil {
+		c.logger.Error("Load AWS config error", zap.Error(err))
+		return err
+	}
+
+	c.client = s3.NewFromConfig(cfg)
 
 	return nil
 }
@@ -95,15 +147,47 @@ func (c *BucketConnector) ListBuckets() ([]types.Bucket, error) {
 	return result.Buckets, nil
 }
 
-func (c *BucketConnector) UploadFile(filename string, bucketName string, data *os.File, contentType string) (error) {
-    _, err := c.client.PutObject(context.TODO(), &s3.PutObjectInput{
-        Bucket:      aws.String(bucketName),
-        Key:         aws.String(filename),
-        Body:        data,
-		ContentType: aws.String(contentType), // Set Content-Type header
-    })
+func (c *BucketConnector) SaveFile(req *UploaderReq) (string, error) {
+	ctx := context.Background()
 
-	return err
+	encodedData := req.RawData
+	reader := base64.NewDecoder(base64.StdEncoding, strings.NewReader(encodedData))
+
+	fileName := uuid.New().String()
+	if req.FileName != "" {
+		fileName = req.FileName
+	}
+
+	filePath := fmt.Sprintf("%s/%s", req.Category, fileName)
+
+	contentType := "image/jpeg"
+
+	// Calculate the approximate content length from the base64 encoded data
+	// Every 4 base64 characters represent 3 bytes of data
+	rawLength := int64(len(encodedData))
+	contentLength := (rawLength / 4) * 3
+	if rawLength%4 != 0 { // Handle any padding
+		contentLength += rawLength%4 - 1
+	}
+
+	c.logger.Info("Uploading file to S3", zap.String("file_path", filePath))
+
+	bucketName := viper.GetString(c.getConfigPath("bucket_name"))
+	_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        &bucketName,
+		Key:           aws.String(filePath),
+		Body:          reader,
+		ContentType:   &contentType,
+		ContentLength: &contentLength,
+	})
+	if err != nil {
+		c.logger.Error("Upload to S3 error", zap.Error(err))
+		return "", err
+	}
+
+	url := fmt.Sprintf("https://%s/%s", bucketName, url.PathEscape(filePath))
+
+	return url, nil
 }
 
 func (c *BucketConnector) GetClient() *s3.Client {
