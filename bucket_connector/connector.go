@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"net/url"
 	"bytes"
+	"strings"
+	"io"
 
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -185,4 +187,106 @@ func (c *BucketConnector) SaveFile(req *UploaderReq, contentType string) (string
 
 func (c *BucketConnector) GetClient() *s3.Client {
 	return c.client
+}
+
+func (c *BucketConnector) DeleteFileWithPrefix(filePath string) error {
+	bucketName := viper.GetString(c.getConfigPath("bucket_name"))
+
+	// List and delete objects with the prefix
+	listInput := &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucketName),
+		Prefix: aws.String(filePath),
+	}
+
+	paginator := s3.NewListObjectsV2Paginator(c.client, listInput)
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(context.TODO())
+		if err != nil {
+			c.logger.Error("Failed to list objects", zap.Error(err))
+			return err
+		}
+
+		// Delete all objects found in this page
+		for _, obj := range page.Contents {
+			deleteInput := &s3.DeleteObjectInput{
+				Bucket: aws.String(bucketName),
+				Key:    obj.Key,
+			}
+
+			_, err := c.client.DeleteObject(context.TODO(), deleteInput)
+			if err != nil {
+				c.logger.Error("Failed to delete object",
+					zap.String("key", *obj.Key),
+					zap.Error(err))
+				return err
+			}
+
+			c.logger.Info("Deleted object",
+				zap.String("key", *obj.Key),
+				zap.String("bucket", bucketName))
+		}
+	}
+
+	return nil
+}
+
+func (c *BucketConnector) DeleteFile(filePath string) error {
+	bucketName := viper.GetString(c.getConfigPath("bucket_name"))
+
+	deleteInput := &s3.DeleteObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(filePath),
+	}
+
+	_, err := c.client.DeleteObject(context.TODO(), deleteInput)
+	if err != nil {
+		// Check if it's a "not found" error
+		var noe *types.NotFound
+		if !strings.Contains(err.Error(), "NotFound") && !strings.Contains(err.Error(), "NoSuchKey") {
+			c.logger.Error("Failed to delete object",
+				zap.String("key", filePath),
+				zap.Error(err))
+			return err
+		}
+		// If object doesn't exist, treat as success
+		return nil
+	}
+
+	c.logger.Info("Deleted object",
+		zap.String("key", filePath),
+		zap.String("bucket", bucketName))
+
+	return nil
+}
+
+func (c *BucketConnector) WriteAsFile(filePath string, content []byte) (string, error) {
+	bucketName := viper.GetString(c.getConfigPath("bucket_name"))
+
+	reader := bytes.NewReader(content)
+
+	putInput := &s3.PutObjectInput{
+		Bucket:        aws.String(bucketName),
+		Key:           aws.String(filePath),
+		Body:          reader,
+		ContentLength: aws.Int64(int64(len(content))),
+		ACL:          types.ObjectCannedACLPublicRead,
+	}
+
+	_, err := c.client.PutObject(context.TODO(), putInput)
+	if err != nil {
+		c.logger.Error("Failed to write object",
+			zap.String("key", filePath),
+			zap.Error(err))
+		return "", err
+	}
+
+	c.logger.Info("Wrote object to S3",
+		zap.String("key", filePath),
+		zap.String("bucket", bucketName),
+		zap.Int("size", len(content)))
+
+	url := fmt.Sprintf("https://%s/%s", bucketName, url.PathEscape(filePath))
+
+	return url, nil
 }
