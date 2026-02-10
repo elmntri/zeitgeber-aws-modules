@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"bytes"
 	"strings"
-	"io"
 
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -242,7 +241,6 @@ func (c *BucketConnector) DeleteFile(filePath string) error {
 	_, err := c.client.DeleteObject(context.TODO(), deleteInput)
 	if err != nil {
 		// Check if it's a "not found" error
-		var noe *types.NotFound
 		if !strings.Contains(err.Error(), "NotFound") && !strings.Contains(err.Error(), "NoSuchKey") {
 			c.logger.Error("Failed to delete object",
 				zap.String("key", filePath),
